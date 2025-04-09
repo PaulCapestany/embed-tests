@@ -2,124 +2,343 @@
 
 ## Executive Summary
 
-This document analyzes multi-model benchmark results for the BitIQ `nostr_ai` service's embedding workflow and provides a concrete implementation strategy based on the findings. Our testing reveals significant performance variations across embedding models, with implications for both system architecture and queue management.
+This document analyzes multi-model benchmark results for the BitIQ `nostr_ai` service's embedding workflow and provides a concrete implementation strategy based on the findings. Our analysis addresses two critical constraints:
+
+1. **Multi-Model Management**: Using multiple embedding models requires separate queue systems for each model, significantly impacting latency
+2. **Sequential Processing Limitations**: High-priority search queries can be blocked by in-progress discussion content processing
 
 Key findings:
-- **nomic-embed-text** significantly outperforms other models in throughput (~122 chunks/s vs 56-59 chunks/s for others)
-- Optimal batch sizes vary by text length and model, but generally converge around 64-80
-- With `OLLAMA_NUM_PARALLEL=1`, all models maintain perfect embedding consistency
-- Different queue management strategies are required for search queries vs. discussion content
+- **Single Model**: For optimal performance, using only **nomic-embed-text** with small discussion batch sizes (8-16) provides best balance of throughput and responsiveness
+- **Multi-Model**: If dual models are required, much smaller batch sizes and parallel processing are essential
+- **Latency Impact**: Search queries could experience unacceptable delays (>1s) with naïve implementation in multi-model scenarios
 
-These results directly inform our dual-queue implementation strategy for handling high-priority search queries alongside longer discussion content.
+Based on detailed latency and throughput analysis, we recommend significant batch size reductions from previous recommendations, with specific queue configurations for single vs. multi-model deployments.
 
-## Model Performance Analysis
+## Latency Analysis
 
-### Overall Performance Ranking
+We evaluated worst-case scenarios where a search query arrives immediately after a discussion batch has started processing, forcing the search query to wait for the entire batch to complete.
 
-Based on extensive benchmarking, here's how the models rank:
+### Single Model (nomic-embed-text) Latency
 
-| Model | Avg Max Throughput | Avg Max Speedup | Optimal for |
-|-------|-------------------|----------------|------------|
-| nomic-embed-text | 122.33 chunks/s | 2.53x | Search queries, high throughput needs |
-| mxbai-embed-large | 59.43 chunks/s | 1.63x | Balanced performance |
-| bge-m3 | 56.99 chunks/s | 4.08x | Maximum batch efficiency |
-| snowflake-arctic-embed2 | 56.11 chunks/s | 4.07x | Maximum batch efficiency |
+| Discussion Batch | Search Batch | Worst-Case Latency | Discussion Throughput | Within 500ms Target |
+|------------------|--------------|-------------------|-----------------------|---------------------|
+| 8                | 8            | 154ms             | 85 chunks/s           | ✅                  |
+| 8                | 16           | 219ms             | 85 chunks/s           | ✅                  |
+| 8                | 32           | 322ms             | 85 chunks/s           | ✅                  |
+| 8                | 64           | 466ms             | 85 chunks/s           | ✅                  |
+| 16               | 8            | 242ms             | 88 chunks/s           | ✅                  |
+| 16               | 16           | 307ms             | 88 chunks/s           | ✅                  |
+| 16               | 32           | 410ms             | 88 chunks/s           | ✅                  |
+| 32               | 8            | 400ms             | 94 chunks/s           | ✅                  |
+| 32               | 16           | 465ms             | 94 chunks/s           | ✅                  |
+| 64               | 8            | 694ms             | 101 chunks/s          | ❌                  |
 
-### Performance by Text Length
+**Key Insight**: Discussion batch sizes above 32 can cause unacceptable search query latency (>500ms), even with a single model.
 
-Shorter text (search queries) and longer text (discussion content) show different performance characteristics:
+### Dual Model (nomic-embed-text + mxbai-embed-large) Sequential Processing
 
-#### Short Queries (15 chars)
+| Discussion Batch | Search Batch | Worst-Case Latency | Discussion Throughput | Within 1000ms Target |
+|------------------|--------------|-------------------|----------------------|----------------------|
+| 8                | 8            | 469ms             | 35 chunks/s          | ✅                   |
+| 8                | 16           | 636ms             | 35 chunks/s          | ✅                   |
+| 8                | 32           | 904ms             | 35 chunks/s          | ✅                   |
+| 16               | 8            | 775ms             | 36 chunks/s          | ✅                   |
+| 16               | 16           | 942ms             | 36 chunks/s          | ✅                   |
+| 16               | 32           | 1210ms            | 36 chunks/s          | ❌                   |
 
-| Model | Best Batch Size | Max Throughput | Latency |
-|-------|----------------|----------------|---------|
-| nomic-embed-text | 64 | ~170 chunks/s | 372ms |
-| mxbai-embed-large | 64 | ~97 chunks/s | 662ms |
-| snowflake-arctic-embed2 | 80 | ~84 chunks/s | 950ms |
-| bge-m3 | 80 | ~87 chunks/s | 914ms |
+**Key Insight**: With sequential dual-model processing, even the smallest discussion batch sizes (8) can cause search queries to wait 469ms before processing begins.
 
-#### Discussion Content (256 chars)
+### Parallel Model Processing (Theoretical)
 
-| Model | Best Batch Size | Max Throughput | Latency |
-|-------|----------------|----------------|---------|
-| nomic-embed-text | 80 | ~104 chunks/s | 770ms |
-| mxbai-embed-large | 64 | ~44 chunks/s | 1445ms |
-| snowflake-arctic-embed2 | 80 | ~45 chunks/s | 1762ms |
-| bge-m3 | 64 | ~46 chunks/s | 1379ms |
+If we could process both models in parallel (separate services), we would see significantly better performance:
 
-### Key Insights
+| Discussion Batch | Search Batch | Worst-Case Latency | Within 500ms Target |
+|------------------|--------------|-------------------|---------------------|
+| 8                | 8            | 315ms             | ✅                  |
+| 8                | 16           | 417ms             | ✅                  |
+| 16               | 8            | 533ms             | ❌                  |
 
-1. **Model Selection**: 
-   - **nomic-embed-text** provides significantly higher throughput and lower latency than alternatives
-   - This performance advantage is particularly pronounced for short text (search queries)
-   - For the critical search query use case, nomic-embed-text is more than 2x faster than alternatives
+**Key Insight**: Even with parallel processing, discussion batch sizes should not exceed 8 to maintain reasonable search latency in a multi-model environment.
 
-2. **Batch Size Optimization**:
-   - Short queries (15 chars): Batch size 64 is optimal for nomic-embed-text
-   - Discussion content (256+ chars): Batch size 80 is optimal for nomic-embed-text
-   - Larger batch sizes increase throughput but add latency - this creates a tradeoff for queue management
+## Recommended Implementation Strategies
 
-3. **Consistency Confirmation**:
-   - All models show perfect embedding consistency when `OLLAMA_NUM_PARALLEL=1`
-   - This confirms our previous finding that parallelism should be achieved through horizontal scaling rather than increased parallel processing within Ollama instances
+Based on our latency analysis, we recommend two distinct approaches depending on whether you need to run one or two embedding models.
 
-## Queue Design Recommendations
+### Approach 1: Single Model (nomic-embed-text)
 
-Based on these findings, we recommend implementing a prioritized dual-queue architecture that directly addresses the different requirements for search queries and discussion content.
+If quality requirements can be met with nomic-embed-text alone, this is by far the best approach for performance and simplicity.
 
-### High-Priority Queue (Search Queries)
-
-- **Purpose**: Process user search queries with minimal latency
-- **Implementation**: 
-  - Use preemptive queue with ability to interrupt ongoing batches
-  - Optimize for low latency over maximum throughput
-  - Process immediately when queue depth reaches 8-16 items
-  - Maximum wait time of 20-50ms to form batches during low traffic
-  - Never wait for batch formation during high traffic
-
-### Standard Queue (Discussion Content)
-
-- **Purpose**: Process longer discussion content with maximum throughput
-- **Implementation**:
-  - Use batch-oriented queue that optimizes for throughput
-  - Larger batch sizes (64-80) for maximum efficiency
-  - Wait time of 100-300ms to form optimal batches
-  - Can be preempted by high-priority queue
-
-### Queue Management Policy
-
-Since Ollama's API doesn't allow canceling in-progress embedding requests, we need a priority-based queue management system that ensures high-priority items are processed immediately after any currently executing batch completes.
-
-The system should implement the following queue management logic:
-
+```yaml
+embedding:
+  model: "nomic-embed-text"  # Significantly outperforms other models in throughput
+  ollama_num_parallel: 1     # Critical for embedding consistency
+  
+  high_priority_queue:       # For search queries
+    batch_size: 32           # Optimal balance of throughput vs. latency
+    min_batch_size: 4        # Process with minimal wait if at least 4 items
+    max_wait_time: 30ms      # Short timeout for interactive use
+    
+  standard_queue:            # For discussion content
+    batch_size: 16           # Critical to keep worst-case latency under 500ms
+    min_batch_size: 4        # Process small batches quickly  
+    max_wait_time: 100ms     # Shorter timeout than previously recommended
 ```
-// This function runs on a short interval (e.g., every 10ms)
-function processNextBatch() {
-    // If already processing a batch, do nothing and wait for completion
-    if (isProcessingAnyBatch) {
-        return;
+
+**Performance Characteristics**:
+- Worst-case search query latency: ~307ms (16 + 16 batch sizes)
+- Discussion content throughput: ~88 chunks/second
+- All search queries completed within 500ms, even in worst-case scenarios
+
+### Approach 2: Dual Models with Parallel Processing
+
+If you absolutely need both models, you should:
+
+1. Run separate Ollama instances for each model
+2. Process each model in parallel through separate microservices
+3. Dramatically reduce batch sizes to manage latency
+
+```yaml
+# Configuration for nomic-embed-text service
+nomic_service:
+  model: "nomic-embed-text"
+  ollama_num_parallel: 1
+  
+  high_priority_queue:
+    batch_size: 16
+    min_batch_size: 2
+    max_wait_time: 20ms
+    
+  standard_queue:
+    batch_size: 8             # Critical to keep under 8 for multi-model scenarios
+    min_batch_size: 2
+    max_wait_time: 50ms
+
+# Configuration for mxbai-embed-large service  
+mxbai_service:
+  model: "mxbai-embed-large"
+  ollama_num_parallel: 1
+  
+  high_priority_queue:
+    batch_size: 8
+    min_batch_size: 2
+    max_wait_time: 20ms
+    
+  standard_queue:
+    batch_size: 8
+    min_batch_size: 2
+    max_wait_time: 50ms
+```
+
+**Performance Characteristics**:
+- Parallel processing worst-case search query latency: ~417ms
+- Discussion content throughput: ~35 chunks/second (limited by slower model)
+- All search queries completed within 500ms in parallel processing
+
+### Approach 3: Single Model with Micro-Batching (Alternative)
+
+If your workload is dominated by discussion content with infrequent search queries, consider an adaptive micro-batching approach:
+
+```yaml
+embedding:
+  model: "nomic-embed-text"
+  ollama_num_parallel: 1
+  
+  high_priority_queue:
+    batch_size: 32           # Optimized for search query throughput
+    min_batch_size: 1        # Process immediately
+    max_wait_time: 10ms      # Minimal waiting
+    
+  standard_queue:
+    batch_size: 32           # Higher throughput during quiet periods
+    min_batch_size: 16       # Begin processing with reasonable batch
+    max_wait_time: 150ms     # Allow time to form batches
+    
+    # Micro-batching parameters
+    micro_batch_size: 8      # Switch to smaller batches when search traffic appears
+    search_traffic_threshold: 1 # Consider any waiting search query as high traffic
+```
+
+This approach dynamically switches to smaller batches when search queries are detected, minimizing the worst-case wait time.
+
+## Queue Architecture Design
+
+We need to rethink our queue architecture to address the multi-model and sequential processing challenges. Here are the key components:
+
+### Single Model Per Instance Approach
+
+Each model requires its own dedicated processing pipeline, with separate high-priority and standard queues:
+
+```go
+// ModelProcessingPipeline manages embedding requests for a single model
+type ModelProcessingPipeline struct {
+    Model              string
+    HighPriorityQueue  *Queue
+    StandardQueue      *Queue
+    HighPriorityConfig QueueConfig
+    StandardConfig     QueueConfig
+    OllamaClient       OllamaClient
+    Metrics            *EmbeddingMetrics
+    
+    processingMutex    sync.Mutex
+    processingState    ProcessingState
+    shutdownCh         chan struct{}
+}
+
+// ProcessingService coordinates multiple model pipelines
+type ProcessingService struct {
+    Pipelines          map[string]*ModelProcessingPipeline
+    SearchResultsCh    chan *SearchResult
+    Metrics            *GlobalMetrics
+}
+```
+
+### Dynamic Batch Size Adjustment
+
+To adapt to changing traffic patterns and ensure search queries don't wait too long:
+
+```go
+// QueueConfig defines settings for a priority queue
+type QueueConfig struct {
+    BaseBatchSize      int            // Default batch size during normal operation
+    MinBatchSize       int            // Minimum batch size to process immediately
+    MaxBatchSize       int            // Maximum batch size under any circumstances
+    MaxWaitTime        time.Duration  // Maximum time to wait for batch formation
+    
+    // Dynamic adjustment
+    MicroBatchSize     int            // Smaller batch size during high search traffic
+    SearchThreshold    int            // Number of waiting search queries to trigger micro-batches
+}
+
+// Check if we should use micro-batching
+func (p *ModelProcessingPipeline) getCurrentBatchSize() int {
+    // If search traffic is present, use smaller batches for discussion content
+    if p.HighPriorityQueue.Size() >= p.StandardConfig.SearchThreshold {
+        return p.StandardConfig.MicroBatchSize
+    }
+    return p.StandardConfig.BaseBatchSize
+}
+```
+
+### Multi-Model Coordination
+
+When using multiple models, we need to coordinate between them for the final results:
+
+```go
+// Submit a search query to all model pipelines
+func (s *ProcessingService) SubmitSearchQuery(ctx context.Context, query string) (*CombinedResult, error) {
+    var wg sync.WaitGroup
+    resultCh := make(chan *ModelResult, len(s.Pipelines))
+    
+    // Submit to each pipeline in parallel
+    for modelName, pipeline := range s.Pipelines {
+        wg.Add(1)
+        go func(name string, p *ModelProcessingPipeline) {
+            defer wg.Done()
+            
+            // Submit with timeout
+            ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+            defer cancel()
+            
+            result, err := p.Submit(ctx, query, HighPriority)
+            modelResult := &ModelResult{
+                ModelName: name,
+                Embedding: result,
+                Error:     err,
+            }
+            
+            select {
+            case resultCh <- modelResult:
+            default:
+                // Channel buffer full (shouldn't happen with properly sized channel)
+                s.Metrics.DroppedResults.Inc()
+            }
+        }(modelName, pipeline)
     }
     
-    // Always check high-priority queue first
-    if (high_priority_queue.length > 0) {
-        // Process immediately if we have enough items or oldest has waited too long
-        if (high_priority_queue.length >= min_high_priority_batch_size || 
-            high_priority_queue.oldestItemAge > max_high_priority_wait_time) {
-            process_high_priority_queue();
-        }
-    } 
-    // Only process standard queue if no high-priority items are waiting
-    else if (standard_queue.length > 0) {
-        // Process if we have enough items or oldest has waited too long
-        if (standard_queue.length >= optimal_batch_size || 
-            standard_queue.oldestItemAge > max_standard_wait_time) {
-            process_standard_queue();
+    // Create channel closer
+    go func() {
+        wg.Wait()
+        close(resultCh)
+    }()
+    
+    // Collect results with timeout
+    timeout := time.After(1100 * time.Millisecond)
+    results := make([]*ModelResult, 0, len(s.Pipelines))
+    
+    for {
+        select {
+        case result, ok := <-resultCh:
+            if !ok {
+                // Channel closed, all results collected
+                return &CombinedResult{Results: results}, nil
+            }
+            results = append(results, result)
+            
+        case <-timeout:
+            // Return partial results after timeout
+            s.Metrics.TimeoutSearches.Inc()
+            return &CombinedResult{
+                Results: results,
+                Partial: true,
+                Error:   fmt.Errorf("search timeout: collected %d/%d results", 
+                         len(results), len(s.Pipelines)),
+            }, nil
         }
     }
 }
 ```
 
-This approach ensures that high-priority search queries are processed as soon as possible after any currently executing batch completes.
+### Pipeline Processing Implementation
+
+Each pipeline manages its own queues independently:
+
+```go
+// processNextBatch decides which queue to process next for this model
+func (p *ModelProcessingPipeline) processNextBatch() {
+    p.processingMutex.Lock()
+    defer p.processingMutex.Unlock()
+    
+    // If already processing, don't start another batch
+    if p.processingState.isProcessing {
+        return
+    }
+    
+    // Always check high-priority queue first
+    highPrioritySize := p.HighPriorityQueue.Size()
+    highPriorityAge := p.HighPriorityQueue.OldestItemAge()
+    
+    // Process high priority queue if it has items and meets criteria
+    if highPrioritySize > 0 && 
+       (highPrioritySize >= p.HighPriorityConfig.MinBatchSize || 
+        highPriorityAge >= p.HighPriorityConfig.MaxWaitTime) {
+        
+        batchSize := p.HighPriorityConfig.BaseBatchSize
+        if highPrioritySize < batchSize {
+            batchSize = highPrioritySize
+        }
+        
+        go p.processHighPriorityBatch(batchSize)
+        return
+    }
+    
+    // Only process standard queue if no high-priority items waiting
+    standardSize := p.StandardQueue.Size()
+    standardAge := p.StandardQueue.OldestItemAge()
+    
+    if standardSize > 0 && 
+       (standardSize >= p.StandardConfig.MinBatchSize || 
+        standardAge >= p.StandardConfig.MaxWaitTime) {
+        
+        // Use dynamic batch sizing based on search traffic
+        batchSize := p.getCurrentBatchSize()
+        if standardSize < batchSize {
+            batchSize = standardSize
+        }
+        
+        go p.processStandardBatch(batchSize)
+        return
+    }
+}
 
 ## Implementation Strategy
 
