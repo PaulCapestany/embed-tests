@@ -12,7 +12,6 @@ def analyze_results(results):
             continue
             
         perf = results["performance"][length]
-        cons = results["consistency"][length]
         batch_sizes = results["batch_sizes"][:len(perf["speedup_ratios"])]
         
         # Find batch size with best speedup
@@ -25,11 +24,6 @@ def analyze_results(results):
         best_throughput = perf["chunks_per_second_batch"][best_throughput_idx]
         best_throughput_size = batch_sizes[best_throughput_idx]
         
-        # Find batch size with best consistency
-        best_consistency_idx = np.argmax(cons["avg_similarities"]) if len(cons["avg_similarities"]) > 0 else None
-        best_consistency = cons["avg_similarities"][best_consistency_idx] if best_consistency_idx is not None else None
-        best_consistency_size = batch_sizes[best_consistency_idx] if best_consistency_idx is not None else None
-        
         # Store results
         optimal_settings[length] = {
             "best_speedup": {
@@ -40,11 +34,7 @@ def analyze_results(results):
                 "batch_size": best_throughput_size,
                 "value": best_throughput,
                 "latency": perf["batch_times"][best_throughput_idx]
-            },
-            "best_consistency": {
-                "batch_size": best_consistency_size,
-                "value": best_consistency
-            } if best_consistency_idx is not None else None
+            }
         }
     
     # Generate summary text
@@ -56,8 +46,8 @@ def analyze_results(results):
         ""
     ]
     
-    summary.append("| Text Length | Best Speedup | Best Throughput | Best Consistency |")
-    summary.append("|------------|-------------|----------------|-----------------|")
+    summary.append("| Text Length | Best Speedup | Best Throughput | Latency (ms) |")
+    summary.append("|------------|-------------|----------------|--------------|")
     
     for length in text_lengths:
         if length not in optimal_settings:
@@ -66,9 +56,9 @@ def analyze_results(results):
         settings = optimal_settings[length]
         speedup_info = f"{settings['best_speedup']['batch_size']} ({settings['best_speedup']['value']:.2f}x)"
         throughput_info = f"{settings['best_throughput']['batch_size']} ({settings['best_throughput']['value']:.2f} chunks/s)"
-        consistency_info = f"{settings['best_consistency']['batch_size']} ({settings['best_consistency']['value']:.4f})" if settings['best_consistency'] else "N/A"
+        latency_ms = f"{settings['best_throughput']['latency'] * 1000:.1f}"
         
-        summary.append(f"| {length} chars | {speedup_info} | {throughput_info} | {consistency_info} |")
+        summary.append(f"| {length} chars | {speedup_info} | {throughput_info} | {latency_ms} |")
     
     summary.append("")
     summary.append("## Key Findings")
@@ -117,18 +107,6 @@ def analyze_results(results):
         summary.append(f"   - {length} chars: Batch size {settings['best_throughput']['batch_size']} has {settings['best_throughput']['latency']:.2f}s latency")
     
     summary.append("")
-    summary.append("4. **Consistency Observations:**")
-    if all(optimal_settings[length]['best_consistency']['batch_size'] == 2 for length in optimal_settings if optimal_settings[length]['best_consistency']):
-        summary.append("   - Small batch sizes (2) consistently provide the best embedding consistency across all text lengths")
-    else:
-        for length in text_lengths:
-            if length not in optimal_settings or not optimal_settings[length]['best_consistency']:
-                continue
-                
-            settings = optimal_settings[length]
-            summary.append(f"   - {length} chars: Best consistency with batch size {settings['best_consistency']['batch_size']}")
-    
-    summary.append("")
     summary.append("## Recommendations for BitIQ Nostr_AI Service")
     summary.append("")
     summary.append("### Short User Queries (15-100 chars):")
@@ -145,17 +123,17 @@ def analyze_results(results):
         summary.append("- Consider dedicated processing path with minimal wait times (20-50ms)")
         
     summary.append("")
-    summary.append("### Discussion Content (512+ chars):")
+    summary.append("### Discussion Content (256+ chars):")
     
     long_content_batch = None
-    for length in [l for l in text_lengths if l >= 512]:
+    for length in [l for l in text_lengths if l >= 256]:
         if length in optimal_settings:
             long_content_batch = optimal_settings[length]['best_throughput']['batch_size']
             break
     
     if long_content_batch:
         summary.append(f"- Use batch size {long_content_batch} for processing longer discussion content")
-        summary.append("- Can use longer wait times to build batches (100-500ms)")
+        summary.append("- Can use longer wait times to build batches (100-300ms)")
     
     return "\n".join(summary)
 
@@ -165,17 +143,16 @@ def visualize_results(results):
     batch_sizes = results["batch_sizes"]
     
     # Create a figure with multiple subplots
-    fig = plt.figure(figsize=(20, 16))
-    fig.suptitle(f'Ollama Embedding Performance & Consistency by Text Length\n'
+    fig = plt.figure(figsize=(16, 12))
+    fig.suptitle(f'Ollama Embedding Performance by Text Length\n'
                 f'Model: {results["model"]}, OLLAMA_NUM_PARALLEL: {results["ollama_num_parallel"]}', 
                 fontsize=16)
     
     # Plot layout
-    gs = fig.add_gridspec(4, 2)  # 4 rows, 2 columns
+    gs = fig.add_gridspec(3, 2)  # 3 rows, 2 columns
     
     # Create DataFrames for easier plotting
     perf_data = {}
-    cons_data = {}
     
     for length in text_lengths:
         if length not in results["performance"]:
@@ -196,21 +173,6 @@ def visualize_results(results):
         perf_data[str(length)]['batch_sizes_str'] = measured_batch_sizes_str
         perf_data[str(length)]['speedup'] = speedup_ratios
         perf_data[str(length)]['throughput'] = throughput
-        
-        # Add consistency metrics to DataFrame
-        if length in results["consistency"]:
-            cons_data[str(length)] = {}
-            
-            avg_distances = results["consistency"][length]["avg_distances"]
-            avg_similarities = results["consistency"][length]["avg_similarities"]
-            
-            measured_cons_batch_sizes = batch_sizes[:len(avg_distances)]
-            measured_cons_batch_sizes_str = [str(size) for size in measured_cons_batch_sizes]
-            
-            cons_data[str(length)]['batch_sizes'] = measured_cons_batch_sizes
-            cons_data[str(length)]['batch_sizes_str'] = measured_cons_batch_sizes_str
-            cons_data[str(length)]['distance'] = avg_distances
-            cons_data[str(length)]['similarity'] = avg_similarities
     
     # 1. Speedup Ratio by Text Length
     ax1 = fig.add_subplot(gs[0, 0])
@@ -325,43 +287,12 @@ def visualize_results(results):
     
     plt.colorbar(im, ax=ax4)
     
-    # 5. Consistency - Euclidean Distance by Text Length
+    # 5. Batch Size Recommendations
     ax5 = fig.add_subplot(gs[2, 0])
-    for length in text_lengths:
-        length_str = str(length)
-        if length_str in cons_data and len(cons_data[length_str]['distance']) > 0:
-            ax5.plot(cons_data[length_str]['batch_sizes_str'], 
-                    cons_data[length_str]['distance'], 
-                    'o-', label=f'{length} chars')
-    
-    ax5.set_xlabel('Batch Size')
-    ax5.set_ylabel('Average Euclidean Distance')
-    ax5.set_title('Embedding Consistency (Euclidean) by Text Length')
-    ax5.legend(title='Text Length')
-    ax5.grid(True, linestyle='--', alpha=0.7)
-    
-    # 6. Consistency - Cosine Similarity by Text Length
-    ax6 = fig.add_subplot(gs[2, 1])
-    for length in text_lengths:
-        length_str = str(length)
-        if length_str in cons_data and len(cons_data[length_str]['similarity']) > 0:
-            ax6.plot(cons_data[length_str]['batch_sizes_str'], 
-                    cons_data[length_str]['similarity'], 
-                    'o-', label=f'{length} chars')
-    
-    ax6.set_xlabel('Batch Size')
-    ax6.set_ylabel('Average Cosine Similarity')
-    ax6.set_title('Embedding Consistency (Cosine) by Text Length')
-    ax6.legend(title='Text Length')
-    ax6.grid(True, linestyle='--', alpha=0.7)
-    
-    # 7. Batch Size Recommendations
-    ax7 = fig.add_subplot(gs[3, 0])
     
     # Calculate optimal batch sizes
     optimal_speedup = {}
     optimal_throughput = {}
-    optimal_consistency = {}
     
     for length in text_lengths:
         # Find batch size with highest speedup
@@ -374,58 +305,51 @@ def visualize_results(results):
             throughput_values = results["performance"][length]["chunks_per_second_batch"]
             best_throughput_idx = np.argmax(throughput_values)
             optimal_throughput[length] = batch_sizes[:len(throughput_values)][best_throughput_idx]
-            
-            # Find batch size with best consistency (highest cosine similarity)
-            if length in results["consistency"] and len(results["consistency"][length]["avg_similarities"]) > 0:
-                similarity_values = results["consistency"][length]["avg_similarities"]
-                best_consistency_idx = np.argmax(similarity_values)
-                optimal_consistency[length] = batch_sizes[:len(similarity_values)][best_consistency_idx]
     
     # Prepare data for bar chart
     bar_data = []
     bar_labels = []
     
     for length in text_lengths:
-        if length in optimal_speedup and length in optimal_throughput and length in optimal_consistency:
-            bar_data.append([optimal_speedup[length], optimal_throughput[length], optimal_consistency[length]])
+        if length in optimal_speedup and length in optimal_throughput:
+            bar_data.append([optimal_speedup[length], optimal_throughput[length]])
             bar_labels.append(str(length))
     
     if bar_data:
         bar_data = np.array(bar_data).T
-        width = 0.25
+        width = 0.35
         x = np.arange(len(bar_labels))
         
-        ax7.bar(x - width, bar_data[0], width, label='Best Speedup')
-        ax7.bar(x, bar_data[1], width, label='Best Throughput')
-        ax7.bar(x + width, bar_data[2], width, label='Best Consistency')
+        ax5.bar(x - width/2, bar_data[0], width, label='Best Speedup')
+        ax5.bar(x + width/2, bar_data[1], width, label='Best Throughput')
         
-        ax7.set_xlabel('Text Length (chars)')
-        ax7.set_ylabel('Optimal Batch Size')
-        ax7.set_title('Recommended Batch Sizes by Optimization Goal')
-        ax7.set_xticks(x)
-        ax7.set_xticklabels(bar_labels)
-        ax7.legend()
+        ax5.set_xlabel('Text Length (chars)')
+        ax5.set_ylabel('Optimal Batch Size')
+        ax5.set_title('Recommended Batch Sizes by Optimization Goal')
+        ax5.set_xticks(x)
+        ax5.set_xticklabels(bar_labels)
+        ax5.legend()
     else:
-        ax7.text(0.5, 0.5, "Insufficient data for recommendations", 
-                ha='center', va='center', transform=ax7.transAxes)
+        ax5.text(0.5, 0.5, "Insufficient data for recommendations", 
+                ha='center', va='center', transform=ax5.transAxes)
     
-    # 8. Batch Size vs Latency
-    ax8 = fig.add_subplot(gs[3, 1])
+    # 6. Batch Size vs Latency
+    ax6 = fig.add_subplot(gs[2, 1])
     
     for length in text_lengths:
         length_str = str(length)
         if length_str in perf_data and 'batch_sizes_str' in perf_data[length_str]:
             batch_times = results["performance"][length]["batch_times"]
             if len(batch_times) > 0:
-                ax8.plot(perf_data[length_str]['batch_sizes_str'], 
+                ax6.plot(perf_data[length_str]['batch_sizes_str'], 
                         batch_times, 
                         'o-', label=f'{length} chars')
     
-    ax8.set_xlabel('Batch Size')
-    ax8.set_ylabel('Processing Time (seconds)')
-    ax8.set_title('Batch Processing Latency by Text Length')
-    ax8.legend(title='Text Length')
-    ax8.grid(True, linestyle='--', alpha=0.7)
+    ax6.set_xlabel('Batch Size')
+    ax6.set_ylabel('Processing Time (seconds)')
+    ax6.set_title('Batch Processing Latency by Text Length')
+    ax6.legend(title='Text Length')
+    ax6.grid(True, linestyle='--', alpha=0.7)
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
@@ -747,13 +671,13 @@ def plot_comparative_results(all_results, text_lengths, batch_sizes):
     models = list(all_results.keys())
     
     # Create a figure for model comparison
-    fig = plt.figure(figsize=(20, 24))
+    fig = plt.figure(figsize=(20, 16))
     fig.suptitle(f'Ollama Embedding Model Comparison\n'
                 f'OLLAMA_NUM_PARALLEL: {os.environ.get("OLLAMA_NUM_PARALLEL", "1")}', 
                 fontsize=16)
     
-    # Plot layout - 6 rows, 2 columns
-    gs = fig.add_gridspec(6, 2)
+    # Plot layout - 4 rows, 2 columns
+    gs = fig.add_gridspec(4, 2)
     
     # 1. Speedup Comparison - Short Text
     ax1 = fig.add_subplot(gs[0, 0])
@@ -775,41 +699,23 @@ def plot_comparative_results(all_results, text_lengths, batch_sizes):
     _plot_model_comparison(ax4, all_results, models, "throughput", 
                          text_lengths[2], "Throughput - Medium Text")
     
-    # 5. Consistency Comparison - Short Text
-    ax5 = fig.add_subplot(gs[2, 0])
-    _plot_model_comparison(ax5, all_results, models, "similarity", 
-                         text_lengths[0], "Embedding Consistency - Short Text")
-    
-    # 6. Consistency Comparison - Medium Text
-    ax6 = fig.add_subplot(gs[2, 1])
-    _plot_model_comparison(ax6, all_results, models, "similarity", 
-                         text_lengths[2], "Embedding Consistency - Medium Text")
-    
-    # 7. Best Batch Size by Model (Speedup)
-    ax7 = fig.add_subplot(gs[3, 0])
+    # 5. Best Batch Size by Model (Speedup)
+    ax7 = fig.add_subplot(gs[2, 0])
     _plot_best_batch_size(ax7, all_results, models, text_lengths, "speedup")
     
-    # 8. Best Batch Size by Model (Throughput)
-    ax8 = fig.add_subplot(gs[3, 1])
+    # 6. Best Batch Size by Model (Throughput)
+    ax8 = fig.add_subplot(gs[2, 1])
     _plot_best_batch_size(ax8, all_results, models, text_lengths, "throughput")
     
-    # 9. Latency Comparison by Model - Short Text
-    ax9 = fig.add_subplot(gs[4, 0])
+    # 7. Latency Comparison by Model - Short Text
+    ax9 = fig.add_subplot(gs[3, 0])
     _plot_model_comparison(ax9, all_results, models, "latency", 
                          text_lengths[0], "Latency - Short Text")
     
-    # 10. Latency Comparison by Model - Medium Text
-    ax10 = fig.add_subplot(gs[4, 1])
+    # 8. Latency Comparison by Model - Medium Text
+    ax10 = fig.add_subplot(gs[3, 1])
     _plot_model_comparison(ax10, all_results, models, "latency", 
                           text_lengths[2], "Latency - Medium Text")
-    
-    # 11. Overall Model Ranking (Speedup)
-    ax11 = fig.add_subplot(gs[5, 0])
-    _plot_model_ranking(ax11, all_results, models, text_lengths, "speedup")
-    
-    # 12. Overall Model Ranking (Throughput)
-    ax12 = fig.add_subplot(gs[5, 1])
-    _plot_model_ranking(ax12, all_results, models, text_lengths, "throughput")
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
@@ -1202,7 +1108,6 @@ def analyze_comparative_results(all_results, text_lengths, batch_sizes):
             "max_throughput": [],
             "avg_latency": [],
             "min_latency": [],
-            "consistency": [],
             "best_batch_sizes": {}
         }
         
@@ -1245,13 +1150,6 @@ def analyze_comparative_results(all_results, text_lengths, batch_sizes):
             if len(latency) > 0:
                 model_metrics[model]["avg_latency"].append(np.mean(latency))
                 model_metrics[model]["min_latency"].append(np.min(latency))
-            
-            # Get consistency metrics if available
-            if length in results["consistency"]:
-                similarities = results["consistency"][length]["avg_similarities"]
-                
-                if len(similarities) > 0:
-                    model_metrics[model]["consistency"].append(np.mean(similarities))
     
     # Generate summary text
     summary = [
@@ -1327,7 +1225,7 @@ def analyze_comparative_results(all_results, text_lengths, batch_sizes):
         summary.append(f"| {model} | {speedup_size} | {throughput_size} | {latency_ms} |")
     
     summary.append("")
-    summary.append("### For Discussion Content (512 chars)")
+    summary.append("### For Discussion Content (256 chars)")
     summary.append("")
     summary.append("| Model | Best Speedup Batch Size | Best Throughput Batch Size | Latency (ms) |")
     summary.append("|-------|-------------------------|----------------------------|--------------|")
@@ -1339,18 +1237,18 @@ def analyze_comparative_results(all_results, text_lengths, batch_sizes):
         throughput_size = "N/A"
         latency_ms = "N/A"
         
-        if 512 in metrics["best_batch_sizes"]:
-            if "speedup" in metrics["best_batch_sizes"][512]:
-                speedup_size = str(metrics["best_batch_sizes"][512]["speedup"])
+        if 256 in metrics["best_batch_sizes"]:
+            if "speedup" in metrics["best_batch_sizes"][256]:
+                speedup_size = str(metrics["best_batch_sizes"][256]["speedup"])
             
-            if "throughput" in metrics["best_batch_sizes"][512]:
-                throughput_size = str(metrics["best_batch_sizes"][512]["throughput"])
+            if "throughput" in metrics["best_batch_sizes"][256]:
+                throughput_size = str(metrics["best_batch_sizes"][256]["throughput"])
                 
                 # Find corresponding latency if available
-                if 512 in all_results[model]["performance"]:
-                    throughput_idx = all_results[model]["batch_sizes"].index(metrics["best_batch_sizes"][512]["throughput"])
-                    if throughput_idx < len(all_results[model]["performance"][512]["batch_times"]):
-                        latency_s = all_results[model]["performance"][512]["batch_times"][throughput_idx]
+                if 256 in all_results[model]["performance"]:
+                    throughput_idx = all_results[model]["batch_sizes"].index(metrics["best_batch_sizes"][256]["throughput"])
+                    if throughput_idx < len(all_results[model]["performance"][256]["batch_times"]):
+                        latency_s = all_results[model]["performance"][256]["batch_times"][throughput_idx]
                         latency_ms = f"{latency_s * 1000:.1f}"
         
         summary.append(f"| {model} | {speedup_size} | {throughput_size} | {latency_ms} |")
@@ -1414,14 +1312,14 @@ def analyze_comparative_results(all_results, text_lengths, batch_sizes):
     summary.append("### For Discussion Content:")
     summary.append("")
     for model in models:
-        if 512 in model_metrics[model]["best_batch_sizes"] and "throughput" in model_metrics[model]["best_batch_sizes"][512]:
-            best_size = model_metrics[model]["best_batch_sizes"][512]["throughput"]
+        if 256 in model_metrics[model]["best_batch_sizes"] and "throughput" in model_metrics[model]["best_batch_sizes"][256]:
+            best_size = model_metrics[model]["best_batch_sizes"][256]["throughput"]
             summary.append(f"- If using **{model}**, use batch size {best_size} for discussion content")
     
     summary.append("")
     summary.append("### System Configuration:")
     summary.append("")
-    summary.append(f"1. Set `OLLAMA_NUM_PARALLEL=1` for consistency across all models")
+    summary.append(f"1. Set `OLLAMA_NUM_PARALLEL=1` for all models")
     summary.append(f"2. For priority queue implementation:")
     summary.append(f"   - Use separate processing pools for search queries and discussion content")
     
@@ -1433,9 +1331,9 @@ def analyze_comparative_results(all_results, text_lengths, batch_sizes):
     
     best_content_model = best_model_throughput
     best_content_size = "N/A"
-    if 512 in model_metrics.get(best_content_model, {}).get("best_batch_sizes", {}):
-        if "throughput" in model_metrics[best_content_model]["best_batch_sizes"][512]:
-            best_content_size = model_metrics[best_content_model]["best_batch_sizes"][512]["throughput"]
+    if 256 in model_metrics.get(best_content_model, {}).get("best_batch_sizes", {}):
+        if "throughput" in model_metrics[best_content_model]["best_batch_sizes"][256]:
+            best_content_size = model_metrics[best_content_model]["best_batch_sizes"][256]["throughput"]
     
     summary.append(f"   - For search queries: use smaller batch sizes ({best_query_size}) with minimal wait time (20-50ms)")
     summary.append(f"   - For discussion content: use larger batch sizes ({best_content_size}) with longer wait times (100-300ms)")
