@@ -1,4 +1,19 @@
 import ollama
+import numpy as np
+import os
+import time
+from typing import List, Dict, Tuple
+from dotenv import load_dotenv
+import matplotlib.pyplot as plt
+import pandas as pd
+import json
+from datetime import datetime
+
+load_dotenv()
+
+# Embedding model used
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text:latest")
+OLLAMA_NUM_PARALLEL = os.getenv("OLLAMA_NUM_PARALLEL", "1")
 
 def analyze_results(results):
     """Generate a text summary of the benchmark findings"""
@@ -149,7 +164,7 @@ def visualize_results(results):
                 fontsize=16)
     
     # Plot layout
-    gs = fig.add_gridspec(3, 2)  # 3 rows, 2 columns
+    gs = fig.add_gridspec(2, 2)  # 2 rows, 2 columns (reduced from 3 rows)
     
     # Create DataFrames for easier plotting
     perf_data = {}
@@ -205,90 +220,8 @@ def visualize_results(results):
     ax2.legend(title='Text Length')
     ax2.grid(True, linestyle='--', alpha=0.7)
     
-    # 3. Heatmap for Speedup Ratio
-    ax3 = fig.add_subplot(gs[1, 0])
-    
-    # Find the maximum number of batch sizes actually measured for any text length
-    max_measured_batch_sizes = 0
-    for length in text_lengths:
-        if length in results["performance"]:
-            max_measured_batch_sizes = max(max_measured_batch_sizes, 
-                                       len(results["performance"][length]["speedup_ratios"]))
-    
-    # Use only batch sizes that were measured
-    measured_batch_sizes = batch_sizes[:max_measured_batch_sizes]
-    
-    speedup_data = np.zeros((len(text_lengths), len(measured_batch_sizes)))
-    speedup_mask = np.ones(speedup_data.shape, dtype=bool)
-    
-    for i, length in enumerate(text_lengths):
-        if length in results["performance"]:
-            ratios = results["performance"][length]["speedup_ratios"]
-            for j in range(len(ratios)):
-                speedup_data[i, j] = ratios[j]
-                speedup_mask[i, j] = False
-    
-    # Create masked array for proper heatmap display
-    masked_speedup = np.ma.array(speedup_data, mask=speedup_mask)
-    
-    im = ax3.imshow(masked_speedup, cmap='viridis')
-    ax3.set_xticks(np.arange(len(measured_batch_sizes)))
-    ax3.set_yticks(np.arange(len(text_lengths)))
-    ax3.set_xticklabels(measured_batch_sizes)
-    ax3.set_yticklabels(text_lengths)
-    ax3.set_xlabel('Batch Size')
-    ax3.set_ylabel('Text Length (chars)')
-    ax3.set_title('Speedup Ratio Heatmap')
-    
-    # Add text annotations for non-masked values
-    for i in range(len(text_lengths)):
-        for j in range(len(measured_batch_sizes)):
-            if not speedup_mask[i, j]:
-                text = ax3.text(j, i, f"{speedup_data[i, j]:.1f}",
-                              ha="center", va="center", color="w" if speedup_data[i, j] < 2 else "black")
-    
-    plt.colorbar(im, ax=ax3)
-    
-    # 4. Heatmap for Throughput
-    ax4 = fig.add_subplot(gs[1, 1])
-    
-    throughput_data = np.zeros((len(text_lengths), len(measured_batch_sizes)))
-    throughput_mask = np.ones(throughput_data.shape, dtype=bool)
-    
-    for i, length in enumerate(text_lengths):
-        if length in results["performance"]:
-            throughputs = results["performance"][length]["chunks_per_second_batch"]
-            for j in range(len(throughputs)):
-                throughput_data[i, j] = throughputs[j]
-                throughput_mask[i, j] = False
-    
-    # Create masked array for proper heatmap display
-    masked_throughput = np.ma.array(throughput_data, mask=throughput_mask)
-    
-    im = ax4.imshow(masked_throughput, cmap='plasma')
-    ax4.set_xticks(np.arange(len(measured_batch_sizes)))
-    ax4.set_yticks(np.arange(len(text_lengths)))
-    ax4.set_xticklabels(measured_batch_sizes)
-    ax4.set_yticklabels(text_lengths)
-    ax4.set_xlabel('Batch Size')
-    ax4.set_ylabel('Text Length (chars)')
-    ax4.set_title('Throughput Heatmap (chunks/second)')
-    
-    # Calculate max throughput of non-masked values for color threshold
-    max_visible_throughput = np.max(throughput_data[~throughput_mask]) if np.any(~throughput_mask) else 1
-    
-    # Add text annotations for non-masked values
-    for i in range(len(text_lengths)):
-        for j in range(len(measured_batch_sizes)):
-            if not throughput_mask[i, j]:
-                text = ax4.text(j, i, f"{throughput_data[i, j]:.1f}",
-                              ha="center", va="center", 
-                              color="w" if throughput_data[i, j] < max_visible_throughput/2 else "black")
-    
-    plt.colorbar(im, ax=ax4)
-    
-    # 5. Batch Size Recommendations
-    ax5 = fig.add_subplot(gs[2, 0])
+    # 3. Batch Size Recommendations
+    ax5 = fig.add_subplot(gs[1, 0])
     
     # Calculate optimal batch sizes
     optimal_speedup = {}
@@ -333,8 +266,8 @@ def visualize_results(results):
         ax5.text(0.5, 0.5, "Insufficient data for recommendations", 
                 ha='center', va='center', transform=ax5.transAxes)
     
-    # 6. Batch Size vs Latency
-    ax6 = fig.add_subplot(gs[2, 1])
+    # 4. Batch Size vs Latency
+    ax6 = fig.add_subplot(gs[1, 1])
     
     for length in text_lengths:
         length_str = str(length)
@@ -360,25 +293,6 @@ def visualize_results(results):
     print(f"\nVisualization saved as {plot_filename}")
     
     return plot_filename
-import numpy as np
-import os
-import time
-from typing import List, Dict, Tuple
-from dotenv import load_dotenv
-import matplotlib.pyplot as plt
-import pandas as pd
-import json
-from datetime import datetime
-from sklearn.metrics.pairwise import cosine_similarity
-
-load_dotenv()
-
-# Embedding model used
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text:latest")
-OLLAMA_NUM_PARALLEL = os.getenv("OLLAMA_NUM_PARALLEL", "1")
-
-print(f"Using embedding model: {EMBEDDING_MODEL}")
-print(f"OLLAMA_NUM_PARALLEL setting: {OLLAMA_NUM_PARALLEL}")
 
 def load_sample_text(filename: str = "16-h.htm") -> str:
     """Load sample text from file"""
@@ -542,7 +456,6 @@ def test_length_impact(text_lengths=None, batch_sizes=None, num_trials=2, model_
         "text_lengths": text_lengths,
         "batch_sizes": batch_sizes,
         "performance": {},
-        "consistency": {},
         "timestamp": datetime.now().isoformat()
     }
     
@@ -562,13 +475,6 @@ def test_length_impact(text_lengths=None, batch_sizes=None, num_trials=2, model_
             "speedup_ratios": [],
             "chunks_per_second_individual": [],
             "chunks_per_second_batch": []
-        }
-        
-        results["consistency"][length] = {
-            "avg_distances": [],
-            "max_distances": [],
-            "avg_similarities": [],
-            "min_similarities": []
         }
         
         for batch_size in batch_sizes:
@@ -624,45 +530,6 @@ def test_length_impact(text_lengths=None, batch_sizes=None, num_trials=2, model_
             results["performance"][length]["speedup_ratios"].append(speedup)
             results["performance"][length]["chunks_per_second_individual"].append(individual_throughput)
             results["performance"][length]["chunks_per_second_batch"].append(batch_throughput)
-            
-            # CONSISTENCY TESTING
-            print("  Measuring consistency...")
-            
-            # Embed each chunk individually
-            singles = np.array([embed_string(s) for s in test_chunks])
-            # Embed all chunks in a batch
-            as_list = embed_list(test_chunks)
-            
-            # Calculate Euclidean distances
-            distances = []
-            for single_embedding, as_list_embedding in zip(singles, as_list):
-                distance = np.sqrt(((single_embedding - as_list_embedding) ** 2).sum())
-                distances.append(distance)
-            
-            distances = np.array(distances)
-            avg_distance = np.mean(distances)
-            max_distance = np.max(distances)
-            
-            # Calculate cosine similarities
-            similarities = []
-            for single_embedding, as_list_embedding in zip(singles, as_list):
-                vector1 = single_embedding.reshape(1, -1)
-                vector2 = as_list_embedding.reshape(1, -1)
-                similarity = cosine_similarity(vector1, vector2)[0][0]
-                similarities.append(similarity)
-            
-            similarities = np.array(similarities)
-            avg_similarity = np.mean(similarities)
-            min_similarity = np.min(similarities)
-            
-            print(f"    Avg Euclidean distance: {avg_distance:.4f}, Max: {max_distance:.4f}")
-            print(f"    Avg Cosine similarity: {avg_similarity:.4f}, Min: {min_similarity:.4f}")
-            
-            # Store consistency results
-            results["consistency"][length]["avg_distances"].append(avg_distance)
-            results["consistency"][length]["max_distances"].append(max_distance)
-            results["consistency"][length]["avg_similarities"].append(avg_similarity)
-            results["consistency"][length]["min_similarities"].append(min_similarity)
     
     return results
 
@@ -671,13 +538,13 @@ def plot_comparative_results(all_results, text_lengths, batch_sizes):
     models = list(all_results.keys())
     
     # Create a figure for model comparison
-    fig = plt.figure(figsize=(20, 16))
+    fig = plt.figure(figsize=(20, 14))
     fig.suptitle(f'Ollama Embedding Model Comparison\n'
                 f'OLLAMA_NUM_PARALLEL: {os.environ.get("OLLAMA_NUM_PARALLEL", "1")}', 
                 fontsize=16)
     
-    # Plot layout - 4 rows, 2 columns
-    gs = fig.add_gridspec(4, 2)
+    # Plot layout - 3 rows, 2 columns (reduced from 4 rows)
+    gs = fig.add_gridspec(3, 2)
     
     # 1. Speedup Comparison - Short Text
     ax1 = fig.add_subplot(gs[0, 0])
@@ -707,16 +574,6 @@ def plot_comparative_results(all_results, text_lengths, batch_sizes):
     ax8 = fig.add_subplot(gs[2, 1])
     _plot_best_batch_size(ax8, all_results, models, text_lengths, "throughput")
     
-    # 7. Latency Comparison by Model - Short Text
-    ax9 = fig.add_subplot(gs[3, 0])
-    _plot_model_comparison(ax9, all_results, models, "latency", 
-                         text_lengths[0], "Latency - Short Text")
-    
-    # 8. Latency Comparison by Model - Medium Text
-    ax10 = fig.add_subplot(gs[3, 1])
-    _plot_model_comparison(ax10, all_results, models, "latency", 
-                          text_lengths[2], "Latency - Medium Text")
-    
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
     # Save plot
@@ -736,16 +593,11 @@ def _plot_model_comparison(ax, all_results, models, metric_type, text_length, ti
         if text_length not in results["text_lengths"]:
             continue
             
-        # Get the index for this text length
-        text_length_idx = results["text_lengths"].index(text_length)
-        
         # Get the performance metrics for this length
         if metric_type == "speedup":
             metric_values = results["performance"][text_length]["speedup_ratios"]
         elif metric_type == "throughput":
             metric_values = results["performance"][text_length]["chunks_per_second_batch"]
-        elif metric_type == "similarity":
-            metric_values = results["consistency"][text_length]["avg_similarities"]
         elif metric_type == "latency":
             metric_values = results["performance"][text_length]["batch_times"]
         else:
@@ -766,8 +618,6 @@ def _plot_model_comparison(ax, all_results, models, metric_type, text_length, ti
         ax.axhline(y=1, color='r', linestyle='--', alpha=0.7)
     elif metric_type == "throughput":
         ax.set_ylabel('Chunks Per Second')
-    elif metric_type == "similarity":
-        ax.set_ylabel('Cosine Similarity')
     elif metric_type == "latency":
         ax.set_ylabel('Processing Time (seconds)')
     
@@ -839,256 +689,6 @@ def _plot_best_batch_size(ax, all_results, models, text_lengths, metric_type):
                           ha="center", va="center", color="w" if model_data[i, j] > 64 else "black")
     
     plt.colorbar(im, ax=ax)
-
-def _plot_model_ranking(ax, all_results, models, text_lengths, metric_type):
-    """Plot overall model ranking based on average performance across text lengths"""
-    # Calculate average metric value for each model
-    model_scores = {}
-    
-    for model in models:
-        scores = []
-        
-        for length in text_lengths:
-            results = all_results[model]
-            
-            if length not in results["performance"]:
-                continue
-                
-            # Get the best metric value for this text length
-            if metric_type == "speedup":
-                metric_values = results["performance"][length]["speedup_ratios"]
-            elif metric_type == "throughput":
-                metric_values = results["performance"][length]["chunks_per_second_batch"]
-            else:
-                continue
-            
-            if len(metric_values) > 0:
-                best_value = np.max(metric_values)
-                scores.append(best_value)
-        
-        if scores:
-            model_scores[model] = np.mean(scores)
-    
-    # Check if we have any scores
-    if not model_scores:
-        ax.text(0.5, 0.5, "Insufficient data for ranking", 
-                ha='center', va='center', transform=ax.transAxes)
-        return
-    
-    # Sort models by score
-    sorted_models = sorted(model_scores.keys(), key=lambda x: model_scores[x], reverse=True)
-    scores = [model_scores[model] for model in sorted_models]
-    
-    # Create bar chart
-    y_pos = np.arange(len(sorted_models))
-    ax.barh(y_pos, scores, align='center')
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(sorted_models)
-    ax.invert_yaxis()  # Labels read top-to-bottom
-    
-    if metric_type == "speedup":
-        ax.set_xlabel('Average Best Speedup Ratio')
-        ax.set_title('Model Ranking by Speedup')
-    elif metric_type == "throughput":
-        ax.set_xlabel('Average Best Throughput (chunks/s)')
-        ax.set_title('Model Ranking by Throughput')
-    
-    # 3. Heatmap for Speedup Ratio
-    ax3 = fig.add_subplot(gs[1, 0])
-    
-    # Find the maximum number of batch sizes actually measured for any text length
-    max_measured_batch_sizes = 0
-    for length in text_lengths:
-        max_measured_batch_sizes = max(max_measured_batch_sizes, 
-                                       len(results["performance"][length]["speedup_ratios"]))
-    
-    # Use only batch sizes that were measured
-    measured_batch_sizes = batch_sizes[:max_measured_batch_sizes]
-    
-    speedup_data = np.zeros((len(text_lengths), len(measured_batch_sizes)))
-    speedup_mask = np.ones(speedup_data.shape, dtype=bool)
-    
-    for i, length in enumerate(text_lengths):
-        ratios = results["performance"][length]["speedup_ratios"]
-        for j in range(len(ratios)):
-            speedup_data[i, j] = ratios[j]
-            speedup_mask[i, j] = False
-    
-    # Create masked array for proper heatmap display
-    masked_speedup = np.ma.array(speedup_data, mask=speedup_mask)
-    
-    im = ax3.imshow(masked_speedup, cmap='viridis')
-    ax3.set_xticks(np.arange(len(measured_batch_sizes)))
-    ax3.set_yticks(np.arange(len(text_lengths)))
-    ax3.set_xticklabels(measured_batch_sizes)
-    ax3.set_yticklabels(text_lengths)
-    ax3.set_xlabel('Batch Size')
-    ax3.set_ylabel('Text Length (chars)')
-    ax3.set_title('Speedup Ratio Heatmap')
-    
-    # Add text annotations for non-masked values
-    for i in range(len(text_lengths)):
-        for j in range(len(measured_batch_sizes)):
-            if not speedup_mask[i, j]:
-                text = ax3.text(j, i, f"{speedup_data[i, j]:.1f}",
-                              ha="center", va="center", color="w" if speedup_data[i, j] < 2 else "black")
-    
-    plt.colorbar(im, ax=ax3)
-    
-    # 4. Heatmap for Throughput
-    ax4 = fig.add_subplot(gs[1, 1])
-    
-    throughput_data = np.zeros((len(text_lengths), len(measured_batch_sizes)))
-    throughput_mask = np.ones(throughput_data.shape, dtype=bool)
-    
-    for i, length in enumerate(text_lengths):
-        throughputs = results["performance"][length]["chunks_per_second_batch"]
-        for j in range(len(throughputs)):
-            throughput_data[i, j] = throughputs[j]
-            throughput_mask[i, j] = False
-    
-    # Create masked array for proper heatmap display
-    masked_throughput = np.ma.array(throughput_data, mask=throughput_mask)
-    
-    im = ax4.imshow(masked_throughput, cmap='plasma')
-    ax4.set_xticks(np.arange(len(measured_batch_sizes)))
-    ax4.set_yticks(np.arange(len(text_lengths)))
-    ax4.set_xticklabels(measured_batch_sizes)
-    ax4.set_yticklabels(text_lengths)
-    ax4.set_xlabel('Batch Size')
-    ax4.set_ylabel('Text Length (chars)')
-    ax4.set_title('Throughput Heatmap (chunks/second)')
-    
-    # Calculate max throughput of non-masked values for color threshold
-    max_visible_throughput = np.max(throughput_data[~throughput_mask])
-    
-    # Add text annotations for non-masked values
-    for i in range(len(text_lengths)):
-        for j in range(len(measured_batch_sizes)):
-            if not throughput_mask[i, j]:
-                text = ax4.text(j, i, f"{throughput_data[i, j]:.1f}",
-                              ha="center", va="center", 
-                              color="w" if throughput_data[i, j] < max_visible_throughput/2 else "black")
-    
-    plt.colorbar(im, ax=ax4)
-    
-    # 5. Consistency - Euclidean Distance by Text Length
-    ax5 = fig.add_subplot(gs[2, 0])
-    for length in text_lengths:
-        length_str = str(length)
-        if length_str in cons_data and len(cons_data[length_str]['distance']) > 0:
-            ax5.plot(cons_data[length_str]['batch_sizes_str'], 
-                    cons_data[length_str]['distance'], 
-                    'o-', label=f'{length} chars')
-    
-    ax5.set_xlabel('Batch Size')
-    ax5.set_ylabel('Average Euclidean Distance')
-    ax5.set_title('Embedding Consistency (Euclidean) by Text Length')
-    ax5.legend(title='Text Length')
-    ax5.grid(True, linestyle='--', alpha=0.7)
-    
-    # 6. Consistency - Cosine Similarity by Text Length
-    ax6 = fig.add_subplot(gs[2, 1])
-    for length in text_lengths:
-        length_str = str(length)
-        if length_str in cons_data and len(cons_data[length_str]['similarity']) > 0:
-            ax6.plot(cons_data[length_str]['batch_sizes_str'], 
-                    cons_data[length_str]['similarity'], 
-                    'o-', label=f'{length} chars')
-    
-    ax6.set_xlabel('Batch Size')
-    ax6.set_ylabel('Average Cosine Similarity')
-    ax6.set_title('Embedding Consistency (Cosine) by Text Length')
-    ax6.legend(title='Text Length')
-    ax6.grid(True, linestyle='--', alpha=0.7)
-    
-    # 7. Batch Size Recommendations
-    ax7 = fig.add_subplot(gs[3, 0])
-    
-    # Calculate optimal batch sizes
-    optimal_speedup = {}
-    optimal_throughput = {}
-    optimal_consistency = {}
-    
-    for length in text_lengths:
-        # Find batch size with highest speedup
-        if len(results["performance"][length]["speedup_ratios"]) > 0:
-            speedup_values = results["performance"][length]["speedup_ratios"]
-            best_speedup_idx = np.argmax(speedup_values)
-            optimal_speedup[length] = batch_sizes[:len(speedup_values)][best_speedup_idx]
-            
-            # Find batch size with highest throughput
-            throughput_values = results["performance"][length]["chunks_per_second_batch"]
-            best_throughput_idx = np.argmax(throughput_values)
-            optimal_throughput[length] = batch_sizes[:len(throughput_values)][best_throughput_idx]
-            
-            # Find batch size with best consistency (highest cosine similarity)
-            if len(results["consistency"][length]["avg_similarities"]) > 0:
-                similarity_values = results["consistency"][length]["avg_similarities"]
-                best_consistency_idx = np.argmax(similarity_values)
-                optimal_consistency[length] = batch_sizes[:len(similarity_values)][best_consistency_idx]
-    
-    # Prepare data for bar chart
-    bar_data = []
-    bar_labels = []
-    
-    for length in text_lengths:
-        if length in optimal_speedup and length in optimal_throughput and length in optimal_consistency:
-            bar_data.append([optimal_speedup[length], optimal_throughput[length], optimal_consistency[length]])
-            bar_labels.append(str(length))
-    
-    if bar_data:
-        bar_data = np.array(bar_data).T
-        width = 0.25
-        x = np.arange(len(bar_labels))
-        
-        ax7.bar(x - width, bar_data[0], width, label='Best Speedup')
-        ax7.bar(x, bar_data[1], width, label='Best Throughput')
-        ax7.bar(x + width, bar_data[2], width, label='Best Consistency')
-        
-        ax7.set_xlabel('Text Length (chars)')
-        ax7.set_ylabel('Optimal Batch Size')
-        ax7.set_title('Recommended Batch Sizes by Optimization Goal')
-        ax7.set_xticks(x)
-        ax7.set_xticklabels(bar_labels)
-        ax7.legend()
-    else:
-        ax7.text(0.5, 0.5, "Insufficient data for recommendations", 
-                ha='center', va='center', transform=ax7.transAxes)
-    
-    # 8. Batch Size vs Latency
-    ax8 = fig.add_subplot(gs[3, 1])
-    
-    for length in text_lengths:
-        length_str = str(length)
-        if length_str in perf_data and 'batch_sizes_str' in perf_data[length_str]:
-            batch_times = results["performance"][length]["batch_times"]
-            if len(batch_times) > 0:
-                ax8.plot(perf_data[length_str]['batch_sizes_str'], 
-                        batch_times, 
-                        'o-', label=f'{length} chars')
-    
-    ax8.set_xlabel('Batch Size')
-    ax8.set_ylabel('Processing Time (seconds)')
-    ax8.set_title('Batch Processing Latency by Text Length')
-    ax8.legend(title='Text Length')
-    ax8.grid(True, linestyle='--', alpha=0.7)
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    
-    # Save plot
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    plot_filename = f"ollama_text_length_benchmark_{timestamp}.png"
-    plt.savefig(plot_filename, dpi=300)
-    print(f"\nVisualization saved as {plot_filename}")
-    
-    # Save raw results as JSON
-    results_filename = f"ollama_text_length_benchmark_{timestamp}.json"
-    with open(results_filename, 'w') as f:
-        json.dump(results, f, indent=2)
-    print(f"Raw results saved as {results_filename}")
-    
-    return plot_filename
 
 def analyze_comparative_results(all_results, text_lengths, batch_sizes):
     """Generate a text summary comparing the performance of different embedding models"""
@@ -1343,7 +943,7 @@ def analyze_comparative_results(all_results, text_lengths, batch_sizes):
 def main():
     # Define parameters for this benchmark
     text_lengths = [15, 100, 256, 480]  # Specific text lengths as requested
-    batch_sizes = [1, 2, 8, 16, 32, 48, 64, 80]  # Specific batch sizes as requested
+    batch_sizes = [1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 80]  # Specific batch sizes as requested
     
     # Define models to test
     # Can be passed via command line arguments
