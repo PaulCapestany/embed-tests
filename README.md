@@ -1,6 +1,6 @@
 # Ollama Embedding Benchmark Tools
 
-This repository contains tools for benchmarking and analyzing the performance of Ollama's embedding functionality. These tools help optimize batch sizes and parallel processing settings for production deployments, with specific attention to text length and batch size performance characteristics.
+This repository contains tools for benchmarking and analyzing the performance of Ollama's embedding functionality. These tools help optimize batch sizes and parallel processing settings for deployments, with specific attention to text length and batch size performance characteristics.
 
 ## Overview
 
@@ -10,7 +10,11 @@ Three main scripts are provided:
 2. **performance.py**: Measures performance (speed) differences between individual and batch processing
 3. **text_length_benchmark.py**: Analyzes how text length affects embedding performance and optimal batch sizes
 
-These tools are valuable for Site Reliability Engineers, DevOps engineers, and developers working with embedding models in production environments, particularly for applications like vector similarity search services that utilizing vector embeddings.
+These tools are valuable for Site Reliability Engineers, DevOps engineers, and developers working with embedding models in environments, particularly for applications like vector similarity search services that utilizing vector embeddings.
+
+## Example Results
+
+![alt text](ollama_model_comparison_20250409_043841.png)
 
 ## Requirements
 
@@ -198,7 +202,7 @@ python text_length_benchmark.py nomic-embed-text all-MiniLM-L6-v2
 
 Based on comprehensive benchmark results, the following configurations are recommended:
 
-### For Production Deployment
+### For Deployment
 
 1. **Short Text (15-100 chars, e.g., search queries)**:
    - Use batch size 8-16 for optimal throughput
